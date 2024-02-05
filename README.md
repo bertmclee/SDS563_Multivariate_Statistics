@@ -4,7 +4,7 @@ This repository is dedicated to applying Multivariate Statistics methods to anal
 
 ## Dataset Overview
 
-The dataset includes comprehensive statistics from the National Basketball Association, its predecessor, the Basketball Association of America (1947-1949), and the American Basketball Association (1968-1976). It covers player season info, career stats, team statistics, and detailed performance metrics.
+The dataset provided on [Kaggle](https://www.kaggle.com/datasets/sumitrodatta/nba-aba-baa-stats?resource=download) includes comprehensive statistics from the National Basketball Association, its predecessor, the Basketball Association of America (1947-1949), and the American Basketball Association (1968-1976). It covers player season info, career stats, team statistics, and detailed performance metrics. We focus on Players statistics in recent years.
 <!-- 
 ## Repository Content
 
