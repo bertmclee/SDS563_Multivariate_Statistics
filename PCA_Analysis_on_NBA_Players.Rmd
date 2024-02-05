@@ -1,0 +1,428 @@
+---
+title: "PCA Analysis on NBA Data"
+author: "Mu-Chia Lee, Rebeka Róth"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+  word_document: default
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(readr)       # For reading CSV/Excel files
+library(corrplot)    # For correlation plots
+library(ggplot2)     # For general plotting
+library(FactoMineR)  # For PCA analysis
+library(factoextra)  # For PCA visualization
+library(MVN)         # For multivariate normality check
+library(dplyr)
+library(tidyr) 
+library(paran)
+```
+
+
+## Introduction
+
+In this analysis, we will perform a Principal Component Analysis (PCA) on a dataset containing NBA player statistics. The dataset contains various player statistics specifically related to play by play, such as bad passes, lost ball,  and offensive fouls. The goal of this analysis is to identify the most important components that explain the variance in the dataset and to visualize the relationships between the variables and the observations.
+
+
+## Data Preparation
+
+```{r}
+# Read the dataset
+player_season_stats <- read_csv("../../project/nba_data/Player Play By Play.csv")
+
+# Filter for the past 3 seasons and remove players with less than 1000 minutes played
+player_season_stats <- player_season_stats %>%
+  filter(season <= 2023 & season > 2020 & mp > 1000)
+
+# Convert seas_id and player_id to strings and drop birth_year
+player_season_stats <- player_season_stats %>%
+  filter(season <= 2023 & season > 2020 & mp > 1000) %>%
+  mutate(seas_id = as.character(seas_id),
+         player_id = as.character(player_id),
+         birth_year = NULL) %>%  # This removes the birth_year column
+  mutate(across(where(is.numeric), ~replace_na(., 0)))
+
+
+# View the dimensions and the head of the modified dataset
+dim(player_season_stats)
+head(player_season_stats)
+
+```
+
+
+## Exploratory Data Analysis
+### Univariate Plots
+```{r, fig.width=12, fig.height=6}
+# Selecting numeric columns for plotting
+numeric_cols <- select_if(player_season_stats, is.numeric)
+
+# Creating boxplots
+boxplot(numeric_cols, 
+        main = "Boxplots of Numeric Variables",
+        las = 2, # Rotate axis labels
+        cex.axis = 0.7,
+        col = rainbow(ncol(numeric_cols)))
+
+# Creating density plots for each numeric variable
+par(mfrow = c(2, 4)) # Adjust the grid size based on the number of numeric variables
+for(col_name in names(numeric_cols)) {
+  plot(density(na.omit(numeric_cols[[col_name]])), 
+       main = paste("Density of", col_name),
+       xlab = col_name)
+}
+
+```
+## Exploratory Data Analysis Findings
+
+### Univariate Distribution Observations
+
+- **Season**: Peaks in the distribution correspond to individual seasons.
+- **Age & Experience**: Both age and experience distributions are right-skewed, indicating a younger and less experienced player cohort.
+- **Game Metrics**: Skewed distributions with long tails for various metrics reflect the diversity of player performance.
+- **Turnovers**: Right-skewed distributions suggest turnovers are infrequent for most players, but high for some.
+- **Positional Play Percentages**: Most players have low percentages, indicating specialization in fewer positions.
+- **Foul-related Metrics**: Right-skewed foul distributions suggest most players commit few fouls.
+- **Performance Metrics**: Plus-minus metrics show outliers, indicating exceptional performances.
+- **Assists**: The distribution is right-skewed, with most players generating fewer points through assists.
+- **Drawn Fouls**: Densities are concentrated near zero, indicating most players draw few fouls.
+- **Blocked Attempts**: The majority of players have low block counts, with the distribution being right-skewed.
+- **And-1 Plays**: Such plays are rare events for most players.
+
+```{r}
+# Log transformation for cumulative fields with a shift for zero values
+player_season_stats <- player_season_stats %>%
+  mutate(across(c(bad_pass_turnover, lost_ball_turnover, shooting_foul_committed,
+                  offensive_foul_committed, shooting_foul_drawn, offensive_foul_drawn,
+                  points_generated_by_assists, and1, fga_blocked),
+                ~log1p(.)))
+
+# Log transformation for percentages (assuming no zero values, if there are, consider adding a small constant)
+player_season_stats <- player_season_stats %>%
+  mutate(across(c(pg_percent, sg_percent, sf_percent, pf_percent, c_percent),
+                ~log(. + 1e-6)))  # Adding a small constant to avoid log(0)
+
+```
+
+
+```{r, fig.width=12, fig.height=6}
+# Selecting numeric columns for plotting
+numeric_cols <- select_if(player_season_stats, is.numeric)
+
+# Creating boxplots
+boxplot(numeric_cols, 
+        main = "Boxplots of Numeric Variables",
+        las = 2, # Rotate axis labels
+        cex.axis = 0.7,
+        col = rainbow(ncol(numeric_cols)))
+
+# Creating density plots for each numeric variable
+par(mfrow = c(2, 4)) # Adjust the grid size based on the number of numeric variables
+for(col_name in names(numeric_cols)) {
+  plot(density(na.omit(numeric_cols[[col_name]])), 
+       main = paste("Density of", col_name),
+       xlab = col_name)
+}
+
+```
+
+### Post-transformation
+Log transformation successfully moderated the skewness across most variables, resulting in more symmetric, bell-shaped distributions indicative of normality. This adjustment is particularly evident in `bad_pass_turnover`, `lost_ball_turnover`, `shooting_foul_committed`, and `offensive_foul_committed`, where the long tails have been considerably reduced. Nevertheless, the change in `on_court_plus_minus_per_100_poss` and `net_plus_minus_per_100_poss` was less marked, suggesting that these variables may require alternative approaches to normalization.
+
+### Conclusion
+The applied log transformation is largely effective, moving the distributions closer to normality. This enhances the dataset's compatibility with parametric methods, which typically assume normally distributed variables. Further exploration may include additional normality testing and alternative data transformations as needed.
+
+
+## Multivariate Normality Check
+
+To assess multivariate normality, a chi-square quantile plot is employed, which compares the distribution of the dataset with a chi-square distribution. Deviations from the chi-square line would suggest a departure from multivariate normality.
+
+```{r chi-square-qq-plot}
+# Computing the chi-square quantile plot
+# Select only numeric columns from the dataset
+numeric_data <- player_season_stats %>%
+  select_if(is.numeric)
+
+# Now run the multivariate normality test using the 'numeric_data' dataframe
+mvnData <- mvn(numeric_data, mvnTest = "hz", univariatePlot = "qq", multivariatePlot = "qq")
+
+```
+
+## Chi-Square Q-Q Plot Analysis
+
+The Chi-Square Q-Q plot is a graphical representation to assess the multivariate normality of our NBA dataset. Points lying along the reference line suggest a distribution is consistent with multivariate normality.
+
+### Observations:
+- The plot indicates that many of the data points follow the reference line closely at the beginning, suggesting a good fit to the normal distribution for a majority of the data.
+- However, as we move towards the tail (higher Mahalanobis distances), we observe a noticeable deviation from the line, with points splaying upwards. This pattern indicates that there are outliers present in the dataset or variables that exhibit heavy tails compared to a normal distribution.
+
+### Implications for PCA:
+- While PCA does not strictly require multivariate normality, significant deviations from normality can affect the interpretation of the principal components.
+- The presence of outliers or heavy-tailed distributions may influence the calculation of principal components, potentially overstating the importance of outlier-related variance.
+
+
+
+## Correlation Analysis
+
+A correlation matrix is a crucial step in understanding the inter-relationships between variables before proceeding with PCA. It helps in identifying variables that are highly correlated, which might be combined into a single principal component.
+
+```{r, fig.width=8, fig.height=6}
+# Compute and visualize the correlation matrix
+
+# Set larger plotting area
+options(repr.plot.width=15, repr.plot.height=15)
+
+# Compute the correlation matrix
+cor_matrix <- cor(numeric_data, use = "complete.obs")
+
+# Visualize the correlation matrix with adjustments
+corrplot(cor_matrix, method = "ellipse", tl.cex = 0.5, tl.col = "black", tl.srt = 45)
+
+# Reset to default plotting area (if needed)
+options(repr.plot.width=7, repr.plot.height=7)
+
+
+```
+
+## Correlation Matrix Analysis
+
+The correlation matrix provides a visual representation of the relationship between pairs of variables in the NBA player statistics dataset.
+
+### Observations from the Correlation Plot:
+- There are several variables with strong positive correlations, indicated by the dark blue ellipses, such as between `bad_pass_turnover` and `lost_ball_turnover`. This suggests that players who tend to make bad passes also tend to lose the ball more frequently.
+- Some variables exhibit strong negative correlations, as shown by the dark red ellipses. For example, `on_court_plus_minus_per_100_poss` and `net_plus_minus_per_100_poss` are negatively correlated with turnover-related metrics, indicating that higher turnovers are associated with a less positive impact on the court.
+- The positional play percentages (like `pg_percent`, `sg_percent`, etc.) show some moderate positive correlations with each other, which could suggest that players who spend more time in one position might also cover other positions to some extent.
+- Interestingly, there are some variables with very little to no correlation, such as `age` and `shooting_foul_committed`. This lack of relationship could indicate that age is not a significant factor in the tendency to commit shooting fouls.
+
+### PCA Suitability:
+- The presence of both strong positive and negative correlations suggests that PCA could be a suitable method for dimensionality reduction for this dataset.
+- Variables with high correlations can potentially be combined into principal components, which would simplify the dataset while retaining most of the variability.
+- The lack of correlation between some variables should be noted as it means that PCA may not reduce dimensionality in these areas without loss of information.
+
+### Concluding Remarks:
+- The correlation analysis has uncovered actionable insights into the interplay between various player statistics. 
+- The suitability of PCA is reaffirmed by the identified correlations, and it stands to reason that PCA can help in summarizing the data into principal components that capture the essence of the players' performance metrics.
+
+
+
+## Principal Component Analysis (PCA)
+
+PCA is performed on the standardized variables using the correlation matrix to identify the principal components that explain the most variance within the dataset.
+
+```{r pca-analysis}
+# Perform PCA using the correlation matrix of the standardized variables
+pca_result <- prcomp(numeric_data, scale = TRUE)
+
+# Summary of PCA results showing the importance of each principal component
+summary(pca_result)
+```
+```{r}
+# Scree plot to visualize the variance explained by each principal component
+plot(pca_result, type = "lines", main = "Scree Plot")
+
+```
+
+```{r}
+# Perform parallel analysis to help decide the number of principal components to retain
+paran(numeric_data, iterations = 1000, centile = 95, status = TRUE, graph = TRUE)
+
+```
+
+## PCA Results Interpretation
+
+The PCA analysis provides insights into the data's underlying structure by identifying the principal components that explain the most variance.
+
+### Scree Plot Observations:
+- The scree plot suggests an elbow around the fourth component, implying that the first four components are the most significant in terms of variance explanation.
+- While the first two components show a steeper drop, the third and fourth components continue to contribute meaningfully to the variance.
+
+### Parallel Analysis Observations:
+- The parallel analysis indicates that the actual data eigenvalues remain above the random eigenvalues until somewhere between the sixth and seventh components, suggesting that up to six components may be statistically significant.
+
+### Eigenvalues and Variance Explained:
+- The first component (PC1) explains a substantial 25.67% of the variance, and subsequent components (PC2 through PC4) continue to add non-negligible amounts, leading to a cumulative variance of over 63% explained by the first four components.
+- The eigenvalues greater than 1 criterion supports retaining up to the seventh component. However, based on the scree plot and parallel analysis, a more conservative approach might involve focusing on the first four to six components.
+
+### Decision on Components to Retain:
+- Considering the scree plot and parallel analysis, retaining the first four principal components would capture the most significant variance while still providing a manageable number of components for interpretation.
+- If a broader variance capture is desired, extending to six components is justified by the parallel analysis, which would encompass the majority of significant variance as indicated by the eigenvalues compared to the random data.
+
+### Conclusion:
+- The PCA has effectively distilled the NBA player statistics dataset into a smaller set of components that still capture a significant portion of the information.
+- This dimensionality reduction facilitates a clearer understanding of the data's structure and can aid in further analysis, such as predictive modeling or exploratory visualization.
+
+
+
+
+## Examination and Interpretation of Principal Component Loadings
+
+Now that we have identified the number of principal components to retain, we will examine the loadings for each of these components to interpret their significance.
+
+```{r loadings-analysis}
+# Extract the loadings for the principal components
+loadings <- pca_result$rotation[, 1:6]  # Assuming we retain six components based on previous analysis
+
+# View the loadings matrix
+print(loadings)
+
+# Interpretation of each component based on the loadings
+# Usually, loadings with an absolute value > 0.3 are considered significant
+interpret_loadings <- function(loadings_matrix, cutoff = 0.3) {
+  interpretations <- apply(loadings_matrix, 2, function(component) {
+    significant_loadings <- which(abs(component) > cutoff)
+    names(significant_loadings) <- names(component)[significant_loadings]
+    return(significant_loadings)
+  })
+  return(interpretations)
+}
+
+# Get interpretations for each component
+component_interpretations <- interpret_loadings(loadings)
+print(component_interpretations)
+```
+
+
+## Principal Component Loadings Interpretation
+
+The loadings of the principal components provide insights into which variables contribute most to each component in the PCA.
+
+### PC1 Loadings:
+- PC1 characterizes players with significant offensive engagement, reflected by loadings on `bad_pass_turnover`, `lost_ball_turnover`, `shooting_foul_drawn`, `and1`, and `fga_blocked`. This factor distinguishes high-usage players—typically ball handlers and slashers—who actively create plays, often resulting in turnovers and drawing fouls while also being prone to having their shots blocked. It highlights a profile of players who are central to offensive action and decision-making on the court.
+
+### PC2 Loadings:
+- Principal component two (PC2) has high loadings for position-related percentages such as `pg_percent`, `sg_percent`, and `c_percent`. It seems to capture elements related to the players' positions on the court, possibly indicating a 'positional play style' factor.
+
+### PC3 Loadings:
+- PC3 is significantly influenced by `age`, `experience`, and `on_court_plus_minus_per_100_poss`, which might be reflecting an 'experience and impact' factor, combining the maturity and on-court effectiveness of players.
+
+### PC4 Loadings:
+- The fourth principal component (PC4) includes `season`, `g` (likely games played), and `mp` (minutes played), along with `on_court_plus_minus_per_100_poss`. This component may represent a 'seasonal activity and performance' factor, relating to how active players were in a season and their overall contribution to games.
+
+### PC5 Loadings:
+- PC5 is predominantly associated with `sf_percent` and `pf_percent`, which could indicate a 'forward positions' factor, representing the roles of small forwards and power forwards.
+
+### PC6 Loadings:
+- Lastly, PC6 ties back to `age`, `experience`, and the plus-minus metrics again (`on_court_plus_minus_per_100_poss` and `net_plus_minus_per_100_poss`). This suggests an 'age and effectiveness' factor where older, more experienced players' contributions to the team's performance are captured.
+
+### Conclusion:
+- The principal components extracted seem to encapsulate various aspects of player performance, from in-game actions to positions and roles, as well as experience levels and their impact on the game.
+- These components can serve as new variables for further analysis, where they may be used to cluster players into different profiles or predict outcomes.
+
+
+## Score Plot of Principal Component Scores
+
+Creating a score plot allows us to visualize the data in the reduced-dimensional space formed by the principal components. It can help identify any trends or groupings among the observations.
+
+
+```{r}
+library(ggplot2)
+library(ggforce) # for geom_ellipse
+
+# Convert PCA scores to a data frame
+scores_df <- as.data.frame(pca_result$x)
+
+# Creating the score plot for the first two principal components
+ggplot(scores_df, aes(x = PC1, y = PC2)) +
+  geom_point(color = 'blue', alpha = 0.5) +  # Points
+  stat_ellipse(type = "t", level = 0.95, linetype = "dashed", color = "red", size = 0.5) +  # 95% Confidence Ellipse
+  theme_minimal() +
+  labs(title = "PCA Score Plot with 95% Confidence Ellipse",
+       x = "Principal Component 1",
+       y = "Principal Component 2")
+
+```
+
+
+```{r fig.width=9, fig.height=6}
+library(ggfortify)
+library(ggplot2)
+
+# Define color choices for arrows and labels
+arrow_color <- 'darkblue'  # Choose a color for arrows
+label_color <- 'firebrick'  # Choose a color for labels
+
+# Create the biplot with adjusted colors and sizes
+biplot <- autoplot(pca_result, data = scores_df, label = FALSE,  # Turn off individual point labels
+                   loadings = TRUE, loadings.label = TRUE, loadings.label.size = 2.5,
+                   loadings.colour = arrow_color, loadings.label.colour = label_color,
+                   size = 1) +  # Adjust the size of points
+  labs(title = "PCA Biplot",
+       x = "Principal Component 1",
+       y = "Principal Component 2") +
+  theme_minimal() +
+  theme(legend.position = "none",  # Remove the legend
+        text = element_text(size = 16))  # Adjust text size
+
+# Display the plot
+print(biplot)
+
+
+```
+
+```{r fig.width=9, fig.height=6}
+library(ggfortify)
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+
+# Create a combined identifier for player and season
+player_season_stats$identifier <- paste(player_season_stats$player, player_season_stats$season, sep = "_")
+
+# Bind the identifier column to the PCA scores data frame
+scores_df <- bind_cols(player_season_stats$identifier, pca_result$x)
+colnames(scores_df)[1] <- "identifier"  # Make sure the identifier column is properly named
+
+# Define the number of points to display
+set.seed(123)  # Set a random seed for reproducibility
+n_display <- 100  # Number of points to display
+
+# Randomly sample identifiers to display labels
+selected_labels <- sample(scores_df$identifier, n_display, replace = FALSE)
+
+# Filter the scores_df to only include the selected labels
+selected_scores_df <- scores_df %>%
+  filter(identifier %in% selected_labels)
+
+# Create the biplot with randomly selected player names and seasons
+biplot <- ggplot() +
+  geom_point(data = scores_df, aes_string(x = "PC1", y = "PC2"), color = 'grey70', alpha = 0.5) + # All points in light grey
+  geom_text_repel(data = selected_scores_df, aes_string(label = "identifier", x = "PC1", y = "PC2"),
+                  size = 3, box.padding = 0.35, point.padding = 0.5,
+                  segment.color = 'grey50') +
+  labs(title = "PCA Biplot with Player Names and Seasons", x = "Principal Component 1", y = "Principal Component 2") +
+  theme_minimal() +
+  theme(legend.position = "none", text = element_text(size = 12))
+
+# Display the plot
+print(biplot)
+
+
+```
+
+## Conclusion
+
+The application of Principal Component Analysis (PCA) on the NBA player statistics dataset has been illuminating. The analysis successfully reduced the complex, multi-dimensional space into a lower-dimensional representation that captured significant aspects of player performance. In the context of the PC1 and PC2 plot, the PCA method effectively distinguished players based on their roles and playing styles. 
+
+Star guards and primary ball handlers, exemplified by players like Luka Dončić and Russell Westbrook, clustered towards the lower-left corner of the plot. This area characterizes players with high offensive engagement and ball-handling responsibilities. Conversely, dominant big men such as Joel Embiid and Giannis Antetokounmpo occupied the upper-left corner, representing their significant presence in the interior game and scoring efficiency. 
+
+The 3-and-D specialists known for their defensive prowess and perimeter shooting, like P.J. Tucker and Dorian Finney-Smith, were found in the upper-right corner, indicating a different set of skills impacting the game through defense and efficient shooting.
+
+The PCA provided a powerful means to distill the essence of the data, preserving the relationships and patterns that are most informative of the players' roles and contributions on the court. It underscored the potential of using advanced statistical techniques to capture the intricacies of sports performance, offering a snapshot that correlates well with the recognized playing styles and positions in basketball.
+
+In summary, the PCA on this NBA dataset was not only a technical success in terms of data reduction but also delivered meaningful insights into the nature of the game, reaffirming the value of PCA in sports analytics.
+
+
+
+
+
+
+
+
+
+
+
